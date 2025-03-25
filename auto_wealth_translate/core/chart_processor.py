@@ -7,7 +7,7 @@ Detects and processes charts from document images.
 import logging
 import numpy as np
 import cv2
-from typing import Tuple, List, Dict, Any, Optional
+from typing import Tuple, List, Dict, Any, Optional, Union
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 import io
@@ -319,17 +319,91 @@ def process_line_chart(image: np.ndarray, texts: List[Dict]) -> Dict[str, Any]:
         'all_texts': texts,
     }
 
-def recreate_chart(chart_data: Dict[str, Any], target_lang_texts: Dict[str, str]) -> Optional[Figure]:
+def chart_to_markdown(chart_data: Dict[str, Any], target_lang_texts: Dict[str, str]) -> str:
     """
-    Recreate a chart with translated labels and titles.
+    Convert chart data to markdown format.
     
     Args:
         chart_data: Original chart data
         target_lang_texts: Dictionary mapping original text to translated text
     
     Returns:
-        Matplotlib figure with the recreated chart
+        Markdown string representation of the chart
     """
+    markdown = []
+    
+    # Add title if available
+    if chart_data.get('title') and chart_data['title'] in target_lang_texts:
+        markdown.append(f"## {target_lang_texts[chart_data['title']]}\n")
+    
+    chart_type = chart_data['chart_type']
+    
+    if chart_type == 'bar':
+        # Create markdown table for bar chart
+        categories = chart_data.get('categories', ['Category 1', 'Category 2', 'Category 3'])
+        values = [1, 2, 3]  # Placeholder values
+        
+        # Translate categories
+        translated_categories = [target_lang_texts.get(cat, cat) for cat in categories]
+        
+        # Create markdown table
+        markdown.append("| Category | Value |")
+        markdown.append("|----------|--------|")
+        for cat, val in zip(translated_categories, values):
+            markdown.append(f"| {cat} | {val} |")
+            
+    elif chart_type == 'pie':
+        # Create markdown list for pie chart
+        labels = chart_data.get('legend_items', ['Item 1', 'Item 2', 'Item 3'])
+        sizes = [35, 35, 30]  # Placeholder values
+        
+        # Translate labels
+        translated_labels = [target_lang_texts.get(label, label) for label in labels]
+        
+        markdown.append("### Distribution")
+        for label, size in zip(translated_labels, sizes):
+            markdown.append(f"- {label}: {size}%")
+            
+    elif chart_type == 'line':
+        # Create markdown table for line chart data
+        x = np.arange(5)
+        y = x ** 2
+        
+        markdown.append("| X | Y |")
+        markdown.append("|---|----|")
+        for xi, yi in zip(x, y):
+            markdown.append(f"| {xi} | {yi} |")
+            
+        # Add legend if available
+        if chart_data.get('legend_items'):
+            translated_legends = [target_lang_texts.get(item, item) for item in chart_data['legend_items']]
+            markdown.append("\n**Legend:**")
+            for legend in translated_legends:
+                markdown.append(f"- {legend}")
+    
+    # Add axis labels if available
+    if chart_data.get('x_label') and chart_data['x_label'] in target_lang_texts:
+        markdown.append(f"\n*X-axis: {target_lang_texts[chart_data['x_label']]}*")
+    if chart_data.get('y_label') and chart_data['y_label'] in target_lang_texts:
+        markdown.append(f"\n*Y-axis: {target_lang_texts[chart_data['y_label']]}*")
+    
+    return "\n".join(markdown)
+
+def recreate_chart(chart_data: Dict[str, Any], target_lang_texts: Dict[str, str], output_format: str = "figure") -> Optional[Union[Figure, str]]:
+    """
+    Recreate a chart with translated labels and titles.
+    
+    Args:
+        chart_data: Original chart data
+        target_lang_texts: Dictionary mapping original text to translated text
+        output_format: Output format ("figure" or "markdown")
+    
+    Returns:
+        Either a Matplotlib figure or markdown string
+    """
+    if output_format == "markdown":
+        return chart_to_markdown(chart_data, target_lang_texts)
+        
     try:
         chart_type = chart_data['chart_type']
         
