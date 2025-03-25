@@ -20,6 +20,7 @@ from auto_wealth_translate.core.translator import TranslationService
 from auto_wealth_translate.core.document_rebuilder import DocumentRebuilder
 from auto_wealth_translate.core.validator import OutputValidator
 from auto_wealth_translate.core.markdown_processor import MarkdownProcessor
+from auto_wealth_translate.core.chart_processor import chart_to_markdown
 from auto_wealth_translate.utils.logger import setup_logger, get_logger
 
 # Configure logging
@@ -137,7 +138,7 @@ def translate_document(input_file, source_lang, target_lang, model="gpt-4", api_
         pdf_mode: PDF processing mode ('enhanced', 'precise', 'bilingual', or 'markdown')
     
     Returns:
-        Path to translated file, validation results
+        Path to translated file, validation results, markdown content (if markdown mode)
     """
     # Set OpenAI API key if provided
     if api_key:
@@ -223,7 +224,7 @@ def translate_document(input_file, source_lang, target_lang, model="gpt-4", api_
         validator = OutputValidator()
         validation_result = validator.validate_markdown_document(markdown_result, doc_components)
         
-        return str(output_path), validation_result
+        return str(output_path), validation_result, translated_md
     else:
         # Use standard processing pipeline
         # Initialize components
@@ -256,7 +257,7 @@ def translate_document(input_file, source_lang, target_lang, model="gpt-4", api_
         # Save output
         rebuilt_doc.save(str(output_path))
         
-        return str(output_path), validation_result
+        return str(output_path), validation_result, None
 
 def main():
     st.set_page_config(
@@ -408,7 +409,7 @@ def main():
                     progress_bar.progress(40)
                     
                     # Actual processing
-                    output_path, validation_result = translate_document(
+                    output_path, validation_result, markdown_content = translate_document(
                         temp_file_path,
                         source_language, 
                         target_language,
@@ -452,6 +453,18 @@ def main():
                         base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
                         pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf"></iframe>'
                         st.markdown(pdf_display, unsafe_allow_html=True)
+                    
+                    # Show markdown preview if markdown mode
+                    if pdf_mode == "markdown" and markdown_content:
+                        st.write("### Markdown Preview")
+                        st.markdown(markdown_content)
+                        
+                        # Add download markdown button
+                        markdown_bytes = markdown_content.encode()
+                        b64 = base64.b64encode(markdown_bytes).decode()
+                        markdown_filename = f"{Path(output_path).stem}.md"
+                        markdown_download = f'<a href="data:text/markdown;base64,{b64}" download="{markdown_filename}">Download Markdown</a>'
+                        st.markdown(markdown_download, unsafe_allow_html=True)
                 
                 except Exception as e:
                     st.error(f"An error occurred during translation: {str(e)}")
