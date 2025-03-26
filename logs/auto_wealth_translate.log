@@ -32930,3 +32930,4 @@ arXiv preprint arXiv:1910.05078
 2025-03-26 17:24:07,165 [INFO] auto_wealth_translate.core.validator: Validating translated document
 2025-03-26 17:24:07,165 [INFO] auto_wealth_translate.core.validator: Translation validated with high score: 10/10
 2025-03-26 17:24:07,166 [INFO] auto_wealth_translate.core.document_rebuilder: Document saved to /var/folders/h8/hrt5ytg11qz06sdhf416w9bw0000gn/T/autowealthtranslate_streamlit/0640_zh_a6b071cc.pdf
+2025-03-26 18:27:14,502 [INFO] streamlit_app: Debug logs will be written to: /var/folders/h8/hrt5ytg11qz06sdhf416w9bw0000gn/T/markdown_processor_debug.log

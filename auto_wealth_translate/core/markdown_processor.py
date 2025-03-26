@@ -750,21 +750,42 @@ class MarkdownProcessor:
             return True
         
         # Check for mathematical expressions
-        if re.search(r'[−×÷=]', text):
+        if re.search(r'[−×÷=≤≥≈∑∏∞∫∂∇]', text):
             return True
         
         # Check for technical notations like variable names
-        if re.search(r'[a-zA-Z0-9]_[a-zA-Z0-9]', text):
+        if re.search(r'[a-zA-Z][0-9]', text) or re.search(r'[a-zA-Z]_[a-zA-Z0-9]', text) or re.search(r'[a-zA-Z]\^[a-zA-Z0-9]', text):
             return True
         
         # Check for matrices, vectors, or tensors (often in scientific papers)
         if re.search(r'[𝒙𝑩𝑨𝑻𝑴𝑽𝑾]', text) or re.search(r'[a-zA-Z]←[a-zA-Z]', text):
             return True
         
+        # Check for inline math expressions with parentheses, brackets
+        if re.search(r'\([a-z0-9]+[+\-*/][a-z0-9]+\)', text):
+            return True
+        
+        # Check for superscripts and subscripts
+        if re.search(r'[⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉]', text):
+            return True
+        
+        # Check for special mathematical symbols
+        math_symbols = ['∑', '∫', '∂', '∇', '∈', '∉', '∋', '∝', '∞', '∠', '∥', '∟', '∩', '∪', '∧', '∨', '≠', '≡', '≤', '≥', '⊂', '⊃', '⊆', '⊇', '±', '·', '×', '÷', '→', '⇒', '⇔']
+        if any(symbol in text for symbol in math_symbols):
+            return True
+        
+        # Check for LaTeX-like commands
+        if re.search(r'\\[a-zA-Z]+', text):
+            return True
+        
         # A segment with high percentage of special characters or numbers is likely a formula
         total_chars = len(text)
         special_chars = sum(1 for char in text if not char.isalpha() or char in "()[]{}.,;:+-*/=<>")
-        if total_chars > 0 and special_chars / total_chars > 0.4:  # If more than 40% are special chars
+        if total_chars > 0 and special_chars / total_chars > 0.35:  # If more than 35% are special chars
+            return True
+        
+        # Check for consecutive symbols that likely indicate equations
+        if re.search(r'[+\-*/=<>]{2,}', text):
             return True
         
         return False
