@@ -62,6 +62,7 @@ class DocumentRebuilder:
     MODE_ENHANCED = "enhanced"      # Enhanced version of our current approach
     MODE_PRECISE = "precise"        # Precise element identification (Canva-like)
     MODE_BILINGUAL = "bilingual"    # Side-by-side or sequential bilingual pages
+    MODE_BILINGUAL_MARKDOWN = "bilingual_markdown"  # Bilingual mode with markdown translation
     
     def __init__(self):
         """Initialize the document rebuilder."""
@@ -69,7 +70,8 @@ class DocumentRebuilder:
         self.font_cache = {}  # Cache fonts to avoid reloading them
         
     def rebuild(self, components: List[DocumentComponent], output_format: str = 'pdf', 
-                rebuild_mode: str = MODE_ENHANCED, source_pdf_path: str = None) -> DocumentOutput:
+                rebuild_mode: str = MODE_ENHANCED, source_pdf_path: str = None,
+                source_lang: str = None, target_lang: str = None, translation_model: str = None) -> DocumentOutput:
         """
         Rebuild a document from components.
         
@@ -77,8 +79,11 @@ class DocumentRebuilder:
             components: List of document components
             output_format: Format of the output document (pdf, docx)
             rebuild_mode: Mode for rebuilding the document 
-                          ('enhanced', 'precise', or 'bilingual')
+                          ('enhanced', 'precise', 'bilingual', or 'bilingual_markdown')
             source_pdf_path: Path to original PDF (needed for certain modes)
+            source_lang: Source language code (needed for bilingual_markdown mode)
+            target_lang: Target language code (needed for bilingual_markdown mode)
+            translation_model: Translation model to use (needed for bilingual_markdown mode)
             
         Returns:
             DocumentOutput object
@@ -104,6 +109,15 @@ class DocumentRebuilder:
                     logger.warning("Source PDF path required for bilingual mode. Falling back to enhanced mode.")
                     return self._rebuild_pdf_enhanced(sorted_components)
                 return self._rebuild_pdf_bilingual(sorted_components, source_pdf_path)
+            elif rebuild_mode == self.MODE_BILINGUAL_MARKDOWN:
+                if not source_pdf_path:
+                    logger.warning("Source PDF path required for bilingual markdown mode. Falling back to enhanced mode.")
+                    return self._rebuild_pdf_enhanced(sorted_components)
+                if not all([source_lang, target_lang, translation_model]):
+                    logger.warning("Language parameters required for bilingual markdown mode. Falling back to standard bilingual mode.")
+                    return self._rebuild_pdf_bilingual(sorted_components, source_pdf_path)
+                return self._rebuild_pdf_bilingual_markdown(sorted_components, source_pdf_path, 
+                                                          source_lang, target_lang, translation_model)
             else:
                 logger.warning(f"Unknown rebuild mode: {rebuild_mode}. Using enhanced mode.")
                 return self._rebuild_pdf_enhanced(sorted_components)
@@ -673,29 +687,33 @@ class DocumentRebuilder:
                         )
                     except Exception as e:
                         logger.error(f"Error adding header: {str(e)}")
+                        # Fallback to simple text insertion
+                        try:
+                            page.insert_text((header_rect.x0, header_rect.y0 + 14), 
+                                             f"Translation - Page {page_num}", 
+                                             fontsize=14, 
+                                             color=(0, 0, 0.8))
+                        except Exception as e2:
+                            logger.error(f"Simple header insertion also failed: {str(e2)}")
                     
                     # Process text components
-                    y_position = 70  # Start position after header
+                    y_position = 70
+                    y_spacing = 15  # Standard spacing between items
+                    
                     for component in page_components[page_num]:
+                        # Only process text components in the bilingual mode
                         if isinstance(component, TextComponent):
                             text = component.text
-                            if not text.strip():
-                                continue
                             
-                            # Determine if this is a heading by font size
-                            font_size = component.font_info.get('size', 11)
-                            is_bold = component.font_info.get('bold', False)
+                            # Create a text rectangle for this component
+                            text_rect = fitz.Rect(50, y_position, page.rect.width - 50, y_position + 40)
                             
-                            # Adjust font size for headings
-                            if font_size >= 16 or is_bold:
-                                display_font_size = 14
-                                y_spacing = 25
-                            else:
-                                display_font_size = 11
-                                y_spacing = 20
+                            # Calculate appropriate font size
+                            original_size = component.font_size if hasattr(component, 'font_size') else 11
+                            display_font_size = min(original_size, 11)  # Limit to reasonable size
                             
-                            # Create a text rectangle
-                            text_rect = fitz.Rect(50, y_position, page.rect.width - 50, y_position + y_spacing)
+                            # For small text, use a minimum readable size
+                            display_font_size = max(display_font_size, 9)
                             
                             # Add the text
                             try:
@@ -714,6 +732,19 @@ class DocumentRebuilder:
                                     align=fitz.TEXT_ALIGN_LEFT
                                 )
                                 
+                                # Try simpler text handling approach
+                                try:
+                                    # Try direct text insertion with line breaks
+                                    y_pos = text_rect.y0
+                                    line_height = display_font_size * 1.2
+                                    lines = text.split('\n')
+                                    for line in lines:
+                                        page.insert_text((text_rect.x0, y_pos), line, 
+                                                        fontsize=display_font_size)
+                                        y_pos += line_height
+                                except Exception as e_simple:
+                                    logger.error(f"Even simple text insertion failed: {str(e_simple)}")
+                                
                                 # FIX: Don't use get_textbox_layout, estimate text height instead
                                 # Estimate the number of lines based on text length and available width
                                 estimated_text_width = len(text) * display_font_size * 0.6  # Rough estimate
@@ -727,8 +758,33 @@ class DocumentRebuilder:
                                 logger.error(f"Error adding translated text: {str(e)}")
                                 y_position += y_spacing
                         
-                        # Skip non-text components in this mode
-                        # We could include table translations in the future
+                        # Add support for image components in bilingual mode
+                        elif isinstance(component, ImageComponent) and component.image_data:
+                            try:
+                                # Calculate image size to fit on the page
+                                img_width = component.size[0]
+                                img_height = component.size[1]
+                                
+                                # Scale to fit on page width with margins
+                                max_width = page.rect.width - 100  # 50px margin on each side
+                                scale_factor = min(1.0, max_width / img_width)
+                                
+                                display_width = img_width * scale_factor
+                                display_height = img_height * scale_factor
+                                
+                                # Center image horizontally
+                                x0 = (page.rect.width - display_width) / 2
+                                # Position image at current y position
+                                rect = fitz.Rect(x0, y_position, x0 + display_width, y_position + display_height)
+                                
+                                # Add the image
+                                page.insert_image(rect, stream=component.image_data)
+                                
+                                # Update y position for next element
+                                y_position += display_height + y_spacing
+                            except Exception as e:
+                                logger.error(f"Error adding image to bilingual PDF: {str(e)}")
+                                y_position += y_spacing
             
             # Save the document
             new_doc.save(output_path)
@@ -744,6 +800,162 @@ class DocumentRebuilder:
             # Fallback to enhanced mode
             logger.warning("Falling back to enhanced mode")
             return self._rebuild_pdf_enhanced(components)
+        
+        # Clean up the temporary file
+        try:
+            os.unlink(output_path)
+        except:
+            pass
+        
+        return DocumentOutput(pdf_data, 'pdf')
+    
+    def _rebuild_pdf_bilingual_markdown(self, components: List[DocumentComponent], source_pdf_path: str, 
+                                        source_lang: str, target_lang: str, translation_model: str) -> DocumentOutput:
+        """
+        Rebuild a PDF document with bilingual pages using the Markdown approach.
+        This method keeps the original pages and adds translated pages after each original,
+        using the Markdown processor for better translation quality and formatting.
+        
+        Args:
+            components: List of document components
+            source_pdf_path: Path to the original PDF file
+            source_lang: Source language code
+            target_lang: Target language code
+            translation_model: Translation model to use
+            
+        Returns:
+            DocumentOutput object with PDF data
+        """
+        # Import needed modules here to avoid circular imports
+        from auto_wealth_translate.core.markdown_processor import MarkdownProcessor
+        from auto_wealth_translate.core.translator import TranslationService
+        
+        # Create a temporary file for the output PDF
+        temp_file = tempfile.NamedTemporaryFile(suffix='.pdf', delete=False)
+        temp_file.close()
+        output_path = temp_file.name
+        
+        try:
+            # Open the source PDF to get original pages
+            orig_doc = fitz.open(source_pdf_path)
+            
+            # Create a new document for the bilingual output
+            new_doc = fitz.open()
+            
+            # Initialize the markdown processor and translator
+            md_processor = MarkdownProcessor()
+            translation_service = TranslationService(
+                source_lang=source_lang,
+                target_lang=target_lang,
+                model=translation_model
+            )
+            
+            # For each page in the original document
+            for page_idx in range(len(orig_doc)):
+                page_num = page_idx + 1
+                logger.info(f"Processing page {page_num} for bilingual markdown output")
+                
+                # Add the original page
+                new_doc.insert_pdf(orig_doc, from_page=page_idx, to_page=page_idx)
+                
+                # Create a temporary PDF for just this page
+                temp_page_pdf = tempfile.NamedTemporaryFile(suffix='.pdf', delete=False)
+                temp_page_pdf.close()
+                page_pdf_path = temp_page_pdf.name
+                
+                # Extract just this page to a separate PDF
+                with fitz.open() as page_doc:
+                    page_doc.insert_pdf(orig_doc, from_page=page_idx, to_page=page_idx)
+                    page_doc.save(page_pdf_path)
+                
+                try:
+                    # Convert this page to markdown
+                    logger.info(f"Converting page {page_num} to markdown")
+                    md_content = md_processor.pdf_to_markdown(page_pdf_path)
+                    
+                    # Translate the markdown content
+                    logger.info(f"Translating page {page_num} content")
+                    translated_md = md_processor.translate_markdown(md_content, translation_service)
+                    
+                    # Create a temporary PDF from the translated markdown
+                    temp_translated_pdf = tempfile.NamedTemporaryFile(suffix='.pdf', delete=False)
+                    temp_translated_pdf.close()
+                    translated_pdf_path = temp_translated_pdf.name
+                    
+                    # Generate PDF from the translated markdown
+                    logger.info(f"Generating translated PDF for page {page_num}")
+                    md_processor.markdown_to_pdf(translated_md, translated_pdf_path)
+                    
+                    # Add the translated page(s) from the generated PDF
+                    with fitz.open(translated_pdf_path) as translated_doc:
+                        # Add header to indicate this is a translation page
+                        for t_page in translated_doc:
+                            # Create a new page with the same dimensions
+                            new_page = new_doc.new_page(width=t_page.rect.width, height=t_page.rect.height)
+                            
+                            # Add a header
+                            header_rect = fitz.Rect(50, 30, new_page.rect.width - 50, 60)
+                            try:
+                                new_page.insert_textbox(
+                                    header_rect,
+                                    f"Translation - Page {page_num}",
+                                    fontsize=14,
+                                    color=(0, 0, 0.8),  # Dark blue
+                                    fontname="helv",
+                                    align=fitz.TEXT_ALIGN_CENTER
+                                )
+                            except Exception as header_err:
+                                logger.error(f"Error adding header: {str(header_err)}")
+                                # Fallback to simple text insertion
+                                try:
+                                    new_page.insert_text((header_rect.x0, header_rect.y0 + 14), 
+                                                          f"Translation - Page {page_num}", 
+                                                          fontsize=14, 
+                                                          color=(0, 0, 0.8))
+                                except Exception as e:
+                                    logger.error(f"Simple header insertion also failed: {str(e)}")
+                            
+                            # Copy content from the translated page
+                            new_page.show_pdf_page(
+                                fitz.Rect(0, 60, new_page.rect.width, new_page.rect.height),
+                                translated_doc,
+                                t_page.number
+                            )
+                    
+                    # Clean up temporary files
+                    os.unlink(translated_pdf_path)
+                    
+                except Exception as page_err:
+                    logger.error(f"Error processing page {page_num} with markdown: {str(page_err)}")
+                    # Add an empty translation page with error message
+                    err_page = new_doc.new_page(width=orig_doc[page_idx].rect.width, 
+                                        height=orig_doc[page_idx].rect.height)
+                    err_page.insert_textbox(
+                        fitz.Rect(50, 50, err_page.rect.width - 50, 100),
+                        f"Error translating page {page_num}",
+                        fontsize=12,
+                        color=(1, 0, 0),  # Red text
+                        fontname="helv",
+                        align=fitz.TEXT_ALIGN_CENTER
+                    )
+                
+                # Clean up page PDF
+                os.unlink(page_pdf_path)
+            
+            # Save the document
+            new_doc.save(output_path)
+            new_doc.close()
+            orig_doc.close()
+            
+            # Read the file back
+            with open(output_path, 'rb') as f:
+                pdf_data = f.read()
+                
+        except Exception as e:
+            logger.error(f"Error in bilingual markdown PDF rebuilding: {str(e)}")
+            # Fallback to standard bilingual mode
+            logger.warning("Falling back to standard bilingual mode")
+            return self._rebuild_pdf_bilingual(components, source_pdf_path)
         
         # Clean up the temporary file
         try:

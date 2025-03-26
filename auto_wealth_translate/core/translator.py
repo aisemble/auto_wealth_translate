@@ -33,21 +33,25 @@ class TranslationService:
         Args:
             source_lang: Source language code (e.g., 'en', 'fr')
             target_lang: Target language code (e.g., 'zh', 'fr')
-            model: Model to use for translation (e.g., 'gpt-4')
+            model: Model to use for translation (e.g., 'gpt-4', 'grok-2')
             
         Note:
             To use the OpenAI API for translation, you need to set the OPENAI_API_KEY
-            environment variable. You can do this by:
-            - Adding it to your .env file
-            - Setting it in your environment variables
-            - Setting it directly in the application before running
+            environment variable. 
+            
+            To use the xAI Grok API, you need to set XAI_API_KEY environment variable.
         """
         self.source_lang = source_lang
         self.target_lang = target_lang
         self.model = model
         
         # Max tokens for context length (model dependent)
-        self.max_tokens = 4000 if "gpt-3.5" in model else 8000
+        if "gpt-3.5" in model:
+            self.max_tokens = 4000 
+        elif "grok" in model:
+            self.max_tokens = 8000  # Assuming Grok has similar context length to GPT-4
+        else:
+            self.max_tokens = 8000  # Default for GPT-4 and others
         
         # Language names for reference
         self.language_names = {
@@ -73,10 +77,24 @@ class TranslationService:
                 logger.warning("OpenAI API key not found in environment variables. Please set the OPENAI_API_KEY environment variable to use translation functionality.")
             else:
                 logger.info(f"Initialized OpenAI {model} model")
+        
+        # Initialize xAI API if using Grok models
+        elif model.startswith("grok"):
+            self.api_key = os.environ.get("XAI_API_KEY")
+            if not self.api_key:
+                logger.warning("xAI API key not found in environment variables. Please set the XAI_API_KEY environment variable to use Grok translation functionality.")
+            else:
+                logger.info(f"Initialized xAI {model} model")
                 
         # Create tokenizer for token counting
         try:
-            self.tokenizer = tiktoken.encoding_for_model(model) if model.startswith("gpt") else None
+            if model.startswith("gpt"):
+                self.tokenizer = tiktoken.encoding_for_model(model)
+            elif model.startswith("grok"):
+                # Use a similar tokenizer to GPT models since we don't have a specific one for Grok
+                self.tokenizer = tiktoken.encoding_for_model("gpt-4")
+            else:
+                self.tokenizer = None
         except:
             self.tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
             
@@ -345,7 +363,7 @@ class TranslationService:
     
     def _translate_with_openai(self, text: str, target_lang: str = None, financial_terms: List[str] = None, temperature: float = 0.3) -> str:
         """
-        Translate text using OpenAI API.
+        Translate text using OpenAI or xAI API.
         
         Args:
             text: Text to translate
@@ -357,7 +375,7 @@ class TranslationService:
             Translated text
         """
         if not self.api_key:
-            logger.warning("No OpenAI API key provided, returning original text")
+            logger.warning("No API key provided, returning original text")
             return f"[NO API KEY] {text}"
         
         # Use provided target_lang if available, otherwise use instance target_lang
@@ -381,13 +399,26 @@ class TranslationService:
         system_message += " Preserve formatting, numbers, and special characters. Maintain the professional tone of financial documents."
         
         # Log important info
-        logger.info(f"Translating text with OpenAI ({len(text)} chars) from {source_lang_name} to {target_lang_name}")
+        model_provider = "OpenAI" if self.model.startswith("gpt") else "xAI Grok" if self.model.startswith("grok") else "Custom"
+        logger.info(f"Translating text with {model_provider} ({len(text)} chars) from {source_lang_name} to {target_lang_name}")
         if actual_target_lang == "zh":
             logger.info("Chinese translation requested - ensuring proper character encoding")
         
         try:
-            # Call OpenAI API for translation using the latest client format
-            client = openai.OpenAI(api_key=self.api_key)
+            # Configure client based on model type
+            if self.model.startswith("gpt"):
+                # Call OpenAI API for translation using the latest client format
+                client = openai.OpenAI(api_key=self.api_key)
+            elif self.model.startswith("grok"):
+                # Call xAI API for translation
+                client = openai.OpenAI(
+                    api_key=self.api_key,
+                    base_url="https://api.x.ai/v1"
+                )
+            else:
+                # Default to OpenAI
+                client = openai.OpenAI(api_key=self.api_key)
+            
             response = client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -404,21 +435,31 @@ class TranslationService:
             if actual_target_lang == "zh":
                 has_chinese = any('\u4e00' <= char <= '\u9fff' for char in translated_text)
                 if not has_chinese:
-                    logger.warning(f"OpenAI translation did not return Chinese characters. Result: {translated_text[:100]}...")
+                    logger.warning(f"{model_provider} translation did not return Chinese characters. Result: {translated_text[:100]}...")
                 else:
-                    logger.info("Chinese characters verified in OpenAI translation output")
+                    logger.info(f"Chinese characters verified in {model_provider} translation output")
                     
             return translated_text
             
         except Exception as e:
-            logger.error(f"OpenAI API error: {str(e)}")
+            logger.error(f"API error: {str(e)}")
             
             # Simple retry with backoff in case of rate limiting
             if "rate limit" in str(e).lower():
                 logger.info("Rate limit hit, retrying after delay...")
                 time.sleep(2)
                 try:
-                    client = openai.OpenAI(api_key=self.api_key)
+                    # Configure client based on model type (same as above)
+                    if self.model.startswith("gpt"):
+                        client = openai.OpenAI(api_key=self.api_key)
+                    elif self.model.startswith("grok"):
+                        client = openai.OpenAI(
+                            api_key=self.api_key,
+                            base_url="https://api.x.ai/v1"
+                        )
+                    else:
+                        client = openai.OpenAI(api_key=self.api_key)
+                    
                     response = client.chat.completions.create(
                         model=self.model,
                         messages=[
@@ -441,7 +482,7 @@ class TranslationService:
                             
                     return translated_text
                 except Exception as e2:
-                    logger.error(f"OpenAI API retry failed: {str(e2)}")
+                    logger.error(f"API retry failed: {str(e2)}")
             
             return text  # Return original text on error
     

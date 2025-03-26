@@ -1,4 +1,4 @@
-Metadata-Version: 2.1
+Metadata-Version: 2.4
 Name: auto_wealth_translate
 Version: 0.1.0
 Summary: Automatically translate wealth plan reports while preserving formatting
@@ -35,6 +35,16 @@ Requires-Dist: streamlit>=1.25.0
 Requires-Dist: watchdog>=3.0.0
 Requires-Dist: tqdm>=4.65.0
 Requires-Dist: colorlog>=6.7.0
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: license-file
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
 
 # AutoWealthTranslate
 

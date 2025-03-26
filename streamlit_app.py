@@ -14,6 +14,7 @@ import shutil
 import uuid
 import base64
 import io
+import re
 
 from auto_wealth_translate.core.document_processor import DocumentProcessor
 from auto_wealth_translate.core.translator import TranslationService
@@ -59,6 +60,7 @@ SUPPORTED_LANGUAGES = {
 TRANSLATION_MODELS = {
     "gpt-4": "GPT-4 (Best quality, slower)",
     "gpt-3.5-turbo": "GPT-3.5 Turbo (Faster, good quality)",
+    "grok-2-latest": "Grok 2 (High quality, comparable to GPT-4)",
     "llama-2": "Llama-2 (Local processing, requires additional setup)"
 }
 
@@ -67,7 +69,8 @@ PDF_PROCESSING_MODES = {
     "enhanced": "Enhanced Layout (Improved basic mode)",
     "precise": "Precise Layout (Canva-like, preserves original formatting)",
     "bilingual": "Bilingual Mode (Adds translation pages after originals)",
-    "markdown": "Markdown Mode (Document structure preservation, best for complex formats)"
+    "markdown": "Markdown Mode (Document structure preservation, best for complex formats)",
+    "bilingual_markdown": "Bilingual Markdown Mode (Best quality translations with bilingual layout)"
 }
 
 # More detailed descriptions for each mode
@@ -100,12 +103,25 @@ PDF_MODE_DESCRIPTIONS = {
     
     "markdown": """
     **Markdown Processing Mode**: Uses Markdown as an intermediate format.
-    - Preserves document structure and semantic elements
+    - Preserves document structure, images, and semantic elements
+    - Extracts and properly embeds images during translation
     - Better handling of complex documents with mixed content
     - Superior text flow and formatting for translations
     - Enhanced table and list processing
+    - Full preservation of original document's images and formatting
     - Best for complex financial documents with detailed formatting requirements
     - Improved handling of CJK characters
+    """,
+    
+    "bilingual_markdown": """
+    **Bilingual Markdown Mode**: Combines the best of both approaches.
+    - Keeps original pages and adds translation pages (bilingual layout)
+    - Uses Markdown processing for higher quality translations
+    - Fully preserves images and formatting in translated pages
+    - Superior handling of complex formatting and tables
+    - Maintains proper document structure in translations
+    - Enhanced support for CJK characters
+    - Best option for high-quality bilingual documents with complex formatting
     """
 }
 
@@ -125,7 +141,7 @@ def get_file_download_link(file_path, link_text):
     href = f'<a href="data:{mime_type};base64,{b64}" download="{filename}">{link_text}</a>'
     return href
 
-def translate_document(input_file, source_lang, target_lang, model="gpt-4", api_key=None, pdf_mode="enhanced"):
+def translate_document(input_file, source_lang, target_lang, model="gpt-4", api_key=None, pdf_mode="enhanced", xai_api_key=None):
     """
     Process and translate a document.
     
@@ -135,14 +151,18 @@ def translate_document(input_file, source_lang, target_lang, model="gpt-4", api_
         target_lang: Target language code
         model: Translation model to use
         api_key: OpenAI API key
-        pdf_mode: PDF processing mode ('enhanced', 'precise', 'bilingual', or 'markdown')
+        pdf_mode: PDF processing mode ('enhanced', 'precise', 'bilingual', 'markdown', or 'bilingual_markdown')
+        xai_api_key: xAI API key for Grok models
     
     Returns:
         Path to translated file, validation results, markdown content (if markdown mode)
     """
-    # Set OpenAI API key if provided
-    if api_key:
+    # Set API keys if provided
+    if api_key and model.startswith("gpt"):
         os.environ["OPENAI_API_KEY"] = api_key
+    
+    if xai_api_key and model.startswith("grok"):
+        os.environ["XAI_API_KEY"] = xai_api_key
     
     temp_dir = create_temp_dir()
     
@@ -244,12 +264,25 @@ def translate_document(input_file, source_lang, target_lang, model="gpt-4", api_
         translated_components = translation_service.translate(doc_components)
         
         # Rebuild document
-        rebuilt_doc = doc_rebuilder.rebuild(
-            translated_components, 
-            output_format=input_path.suffix[1:],
-            rebuild_mode=pdf_mode,
-            source_pdf_path=str(input_path) if pdf_mode in ['precise', 'bilingual'] else None
-        )
+        if pdf_mode == "bilingual_markdown":
+            # For bilingual markdown mode, we use a special rebuilder that takes the language info directly
+            rebuilt_doc = doc_rebuilder.rebuild(
+                translated_components, 
+                output_format=input_path.suffix[1:],
+                rebuild_mode=pdf_mode,
+                source_pdf_path=str(input_path),
+                source_lang=source_lang,
+                target_lang=target_lang,
+                translation_model=model
+            )
+        else:
+            # For other modes, use standard rebuilder
+            rebuilt_doc = doc_rebuilder.rebuild(
+                translated_components, 
+                output_format=input_path.suffix[1:],
+                rebuild_mode=pdf_mode,
+                source_pdf_path=str(input_path) if pdf_mode in ['precise', 'bilingual'] else None
+            )
         
         # Validate output
         validation_result = validator.validate(doc_components, rebuilt_doc)
@@ -269,13 +302,38 @@ def main():
     st.title("AutoWealthTranslate")
     st.markdown("### Automatically translate wealth plan reports while preserving formatting")
     
-    # Sidebar for API key
-    st.sidebar.title("Configuration")
-    api_key = st.sidebar.text_input("OpenAI API Key", type="password", 
-                                   help="Required for GPT models. Will be stored only in this session.")
-    
-    if api_key:
-        os.environ["OPENAI_API_KEY"] = api_key
+    # Sidebar: Settings and API Key
+    with st.sidebar:
+        st.title("Settings")
+        
+        # API Keys
+        st.subheader("API Keys")
+        
+        openai_key = st.text_input(
+            "OpenAI API Key",
+            type="password",
+            help="Required for GPT models. Will be stored only in this session."
+        )
+        
+        xai_key = st.text_input(
+            "xAI API Key",
+            type="password",
+            help="Required for Grok models. Visit https://x.ai/api to sign up for access. Will be stored only in this session."
+        )
+        
+        # Credits
+        st.subheader("About")
+        st.markdown("""
+        This tool helps translate financial documents while preserving their structure and formatting.
+        
+        Built with:
+        - Streamlit
+        - OpenAI GPT-4/3.5
+        - xAI Grok
+        - PyMuPDF & WeasyPrint
+        
+        For support: support@example.com
+        """)
     
     # About section in sidebar
     st.sidebar.markdown("---")
@@ -348,7 +406,7 @@ def main():
         
         # Add a note about Chinese support if target is Chinese
         if target_language == "zh":
-            st.info("📝 For Chinese translation, the Precise or Bilingual modes provide the best character support.")
+            st.info("📝 For Chinese translation, the Precise, Bilingual, or **Bilingual Markdown** modes provide the best character support.")
     
     with col3:
         model = st.selectbox(
@@ -357,6 +415,9 @@ def main():
             format_func=lambda x: TRANSLATION_MODELS[x],
             help="The AI model to use for translation. GPT-4 offers the best quality."
         )
+    
+    # Highlight the new mode
+    st.info("🆕 **NEW!** Try our Bilingual Markdown mode which preserves both document structure and images while creating a bilingual output with original and translated pages.")
     
     # File info
     if uploaded_file is not None:
@@ -377,98 +438,128 @@ def main():
             
             # Special note for Chinese translations
             if target_language == "zh" and pdf_mode == "enhanced":
-                st.warning("ℹ️ For better Chinese character rendering, consider using the 'Precise', 'Bilingual', or 'Markdown' mode.")
+                st.warning("ℹ️ For better Chinese character rendering, consider using the 'Precise', 'Bilingual', 'Markdown', or 'Bilingual Markdown' mode.")
         
         # Process button
         if st.button("Translate Document"):
-            if not api_key and model.startswith("gpt"):
+            # Check for required API key based on model
+            api_key_valid = True
+            if not openai_key and model.startswith("gpt"):
                 st.error("OpenAI API Key is required for GPT models. Please enter it in the sidebar.")
-            else:
-                # Save uploaded file to temp location
-                temp_dir = create_temp_dir()
-                temp_file_path = temp_dir / uploaded_file.name
+                api_key_valid = False
+            
+            if not xai_key and model.startswith("grok"):
+                st.error("xAI API Key is required for Grok models. Please enter it in the sidebar.")
+                api_key_valid = False
+            
+            if not api_key_valid:
+                st.stop()
+            
+            # Save uploaded file to temp location
+            temp_dir = create_temp_dir()
+            temp_file_path = temp_dir / uploaded_file.name
+            
+            with open(temp_file_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            
+            # Show progress
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            try:
+                # Processing steps with progress updates
+                status_text.text("Step 1/4: Processing document...")
+                progress_bar.progress(10)
+                time.sleep(0.5)  # Give UI time to update
                 
-                with open(temp_file_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
+                status_text.text("Step 2/4: Extracting content...")
+                progress_bar.progress(25)
+                time.sleep(0.5)
                 
-                # Show progress
-                progress_bar = st.progress(0)
-                status_text = st.empty()
+                status_text.text(f"Step 3/4: Translating content from {SUPPORTED_LANGUAGES[source_language]} to {SUPPORTED_LANGUAGES[target_language]}...")
+                progress_bar.progress(40)
                 
-                try:
-                    # Processing steps with progress updates
-                    status_text.text("Step 1/4: Processing document...")
-                    progress_bar.progress(10)
-                    time.sleep(0.5)  # Give UI time to update
-                    
-                    status_text.text("Step 2/4: Extracting content...")
-                    progress_bar.progress(25)
-                    time.sleep(0.5)
-                    
-                    status_text.text(f"Step 3/4: Translating content from {SUPPORTED_LANGUAGES[source_language]} to {SUPPORTED_LANGUAGES[target_language]}...")
-                    progress_bar.progress(40)
-                    
-                    # Actual processing
-                    output_path, validation_result, markdown_content = translate_document(
-                        temp_file_path,
-                        source_language, 
-                        target_language,
-                        model,
-                        api_key,
-                        pdf_mode
-                    )
-                    
-                    status_text.text("Step 4/4: Finalizing document...")
-                    progress_bar.progress(90)
-                    time.sleep(0.5)
-                    
-                    # Complete
-                    progress_bar.progress(100)
-                    status_text.text("Translation complete!")
-                    
-                    # Show results
-                    st.success(f"Document successfully translated from {SUPPORTED_LANGUAGES[source_language]} to {SUPPORTED_LANGUAGES[target_language]}!")
-                    
-                    # Show validation results
-                    st.write("### Validation Results")
-                    st.write(f"**Score:** {validation_result['score']}/10")
-                    
-                    if validation_result['issues']:
-                        st.warning("Some issues were detected:")
-                        for issue in validation_result['issues']:
-                            st.write(f"- {issue}")
-                    else:
-                        st.write("No issues detected.")
-                    
-                    # Download link
-                    st.markdown("### Download Translated Document")
-                    st.markdown(get_file_download_link(output_path, "Click here to download"), unsafe_allow_html=True)
-                    
-                    # Show preview if PDF
-                    if output_path.endswith(".pdf"):
-                        with open(output_path, "rb") as f:
-                            pdf_bytes = f.read()
-                        
-                        st.write("### Document Preview")
-                        base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
-                        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf"></iframe>'
-                        st.markdown(pdf_display, unsafe_allow_html=True)
-                    
-                    # Show markdown preview if markdown mode
-                    if pdf_mode == "markdown" and markdown_content:
-                        st.write("### Markdown Preview")
-                        st.markdown(markdown_content)
-                        
-                        # Add download markdown button
-                        markdown_bytes = markdown_content.encode()
-                        b64 = base64.b64encode(markdown_bytes).decode()
-                        markdown_filename = f"{Path(output_path).stem}.md"
-                        markdown_download = f'<a href="data:text/markdown;base64,{b64}" download="{markdown_filename}">Download Markdown</a>'
-                        st.markdown(markdown_download, unsafe_allow_html=True)
+                # Actual processing
+                output_path, validation_result, markdown_content = translate_document(
+                    temp_file_path,
+                    source_language,
+                    target_language,
+                    model,
+                    openai_key,
+                    pdf_mode,
+                    xai_key
+                )
                 
-                except Exception as e:
-                    st.error(f"An error occurred during translation: {str(e)}")
-                    logger.error(f"Translation error: {str(e)}", exc_info=True)
+                status_text.text("Step 4/4: Finalizing document...")
+                progress_bar.progress(90)
+                time.sleep(0.5)
+                
+                # Complete
+                progress_bar.progress(100)
+                status_text.text("Translation complete!")
+                
+                # Show results
+                st.success(f"Document successfully translated from {SUPPORTED_LANGUAGES[source_language]} to {SUPPORTED_LANGUAGES[target_language]}!")
+                
+                # Show validation results
+                st.write("### Validation Results")
+                st.write(f"**Score:** {validation_result['score']}/10")
+                
+                if validation_result['issues']:
+                    st.warning("Some issues were detected:")
+                    for issue in validation_result['issues']:
+                        st.write(f"- {issue}")
+                else:
+                    st.write("No issues detected.")
+                
+                # Download link
+                st.markdown("### Download Translated Document")
+                st.markdown(get_file_download_link(output_path, "Click here to download"), unsafe_allow_html=True)
+                
+                # Show preview if PDF
+                if output_path.endswith(".pdf"):
+                    with open(output_path, "rb") as f:
+                        pdf_bytes = f.read()
+                    
+                    st.write("### Document Preview")
+                    base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
+                    pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf"></iframe>'
+                    st.markdown(pdf_display, unsafe_allow_html=True)
+                
+                # Show markdown preview if markdown mode
+                if pdf_mode == "markdown" and markdown_content:
+                    st.write("### Markdown Preview")
+                    
+                    # Extract and display images separately for better preview
+                    # Function to convert local file paths to displayable images
+                    def replace_image_paths(match):
+                        img_path = match.group(2)
+                        try:
+                            with open(img_path, "rb") as img_file:
+                                img_data = img_file.read()
+                                img_ext = img_path.split('.')[-1].lower()
+                                b64_img = base64.b64encode(img_data).decode()
+                                return f'![{match.group(1)}](data:image/{img_ext};base64,{b64_img})'
+                        except Exception as e:
+                            logger.error(f"Error displaying image {img_path}: {str(e)}")
+                            return f'[Image: {match.group(1)}]'
+                    
+                    # Create displayable markdown with embedded images
+                    display_md = re.sub(r'!\[(.*?)\]\((.*?)\)', replace_image_paths, markdown_content)
+                    
+                    # Display the markdown with embedded images
+                    st.markdown(display_md, unsafe_allow_html=True)
+                    
+                    # Add download markdown button
+                    markdown_bytes = markdown_content.encode()
+                    b64 = base64.b64encode(markdown_bytes).decode()
+                    markdown_filename = f"{Path(output_path).stem}.md"
+                    markdown_download = f'<a href="data:text/markdown;base64,{b64}" download="{markdown_filename}">Download Markdown</a>'
+                    st.markdown(markdown_download, unsafe_allow_html=True)
+            
+            except Exception as e:
+                st.error(f"An error occurred during translation: {str(e)}")
+                logger.error(f"Translation error: {str(e)}", exc_info=True)
     
     # Instructions when no file is uploaded
     else:
@@ -514,9 +605,42 @@ def main():
             st.subheader("Markdown Mode (New!)")
             st.write("Uses Markdown as an intermediate format for better document structure preservation.")
             st.write("Best for: Complex financial documents with tables, lists, and detailed formatting requirements.")
+            
+            st.subheader("Bilingual Markdown Mode (Latest!)")
+            st.write("Combines bilingual page layout with markdown processing for superior translation quality and formatting.")
+            st.write("Best for: When you need both bilingual pages and high-quality translations with image preservation.")
         
         # Special note about Chinese translations
-        st.info("📝 **Translating to Chinese?** For the best Chinese character support, we recommend using the 'Precise', 'Bilingual', or 'Markdown' mode which have enhanced CJK (Chinese, Japanese, Korean) font handling.")
+        st.info("📝 **Translating to Chinese?** For the best Chinese character support, we recommend using the 'Precise', 'Bilingual', 'Markdown', or 'Bilingual Markdown' mode which have enhanced CJK (Chinese, Japanese, Korean) font handling.")
+        
+        st.markdown("""
+        ### Translation Model Explanations
+        
+        #### GPT-4
+        * Large language model from OpenAI
+        * Excellent for complex financial terminology 
+        * Strong accuracy for context-sensitive phrases
+        * Robust support for multiple languages
+        
+        #### GPT-3.5 Turbo
+        * Faster alternative to GPT-4
+        * Good balance of speed and quality
+        * Lower cost for high-volume translations
+        * Suitable for most standard documents
+        
+        #### Grok 2
+        * Latest model from xAI
+        * High-quality translations comparable to GPT-4
+        * Strong performance with financial and technical content
+        * Excellent at preserving document structure during translation
+        * Full CJK (Chinese, Japanese, Korean) support
+        
+        #### Llama-2
+        * Open-source language model
+        * Can be run locally for privacy (requires separate setup)
+        * No API key needed when using a local instance
+        * Best for sensitive documents that shouldn't be sent to external APIs
+        """)
 
 if __name__ == "__main__":
     main() 
