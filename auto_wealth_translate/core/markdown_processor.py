@@ -49,6 +49,9 @@ class MarkdownProcessor:
             self.image_dir.mkdir(parents=True, exist_ok=True)
             logger.info(f"Created image directory: {self.image_dir}")
             
+            # Store font information for later use
+            self.font_info = {}
+            
             for page_num, page in enumerate(doc):
                 # Extract text blocks with their properties
                 text_dict = page.get_text("dict")
@@ -101,16 +104,31 @@ class MarkdownProcessor:
                                 font_size = span["size"]
                                 font_name = span["font"]
                                 is_bold = "bold" in font_name.lower()
+                                is_italic = "italic" in font_name.lower()
                                 
-                                # Add text with appropriate markdown formatting
+                                # Store font information for this text
+                                font_key = f"{page_num}_{block_idx}_{line_idx}_{span.get('index', 0)}"
+                                self.font_info[font_key] = {
+                                    "size": font_size,
+                                    "font": font_name,
+                                    "bold": is_bold,
+                                    "italic": is_italic,
+                                    "color": span.get("color", (0, 0, 0))
+                                }
+                                
+                                # Add text with appropriate markdown formatting and font size class
                                 if font_size > 14:
-                                    md_content.append(f"# {text}")
+                                    md_content.append(f'<h1 class="font-size-{int(font_size)}">{text}</h1>')
                                 elif font_size > 12:
-                                    md_content.append(f"## {text}")
+                                    md_content.append(f'<h2 class="font-size-{int(font_size)}">{text}</h2>')
+                                elif is_bold and is_italic:
+                                    md_content.append(f'<span class="font-size-{int(font_size)} bold italic">**_{text}_**</span>')
                                 elif is_bold:
-                                    md_content.append(f"**{text}**")
+                                    md_content.append(f'<span class="font-size-{int(font_size)} bold">**{text}**</span>')
+                                elif is_italic:
+                                    md_content.append(f'<span class="font-size-{int(font_size)} italic">*{text}*</span>')
                                 else:
-                                    md_content.append(text)
+                                    md_content.append(f'<span class="font-size-{int(font_size)}">{text}</span>')
                             
                             # Log full line text
                             if line_text.strip():
@@ -461,7 +479,7 @@ class MarkdownProcessor:
             
     def markdown_to_pdf(self, markdown_content, output_path):
         """
-        Convert markdown to PDF.
+        Convert markdown to PDF using HTML as an intermediate format.
         
         Args:
             markdown_content: Markdown content
@@ -478,35 +496,133 @@ class MarkdownProcessor:
                 # Set up font configuration
                 font_config = FontConfiguration()
                 
-                # Create CSS for better formatting
+                # Create CSS for better formatting with font size preservation
                 css = CSS(string='''
                     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans&family=Noto+Sans+SC&display=swap');
+                    
+                    /* Base styles */
                     body {
                         font-family: 'Noto Sans', 'Noto Sans SC', sans-serif;
                         margin: 3em;
                         line-height: 1.5;
                     }
+                    
+                    /* Font size classes */
+                    .font-size-8 { font-size: 8pt; }
+                    .font-size-9 { font-size: 9pt; }
+                    .font-size-10 { font-size: 10pt; }
+                    .font-size-11 { font-size: 11pt; }
+                    .font-size-12 { font-size: 12pt; }
+                    .font-size-14 { font-size: 14pt; }
+                    .font-size-16 { font-size: 16pt; }
+                    .font-size-18 { font-size: 18pt; }
+                    .font-size-20 { font-size: 20pt; }
+                    .font-size-24 { font-size: 24pt; }
+                    .font-size-28 { font-size: 28pt; }
+                    .font-size-32 { font-size: 32pt; }
+                    .font-size-36 { font-size: 36pt; }
+                    .font-size-40 { font-size: 40pt; }
+                    .font-size-48 { font-size: 48pt; }
+                    
+                    /* Text formatting */
+                    .bold { font-weight: bold; }
+                    .italic { font-style: italic; }
+                    
+                    /* Headers */
+                    h1, h2, h3, h4, h5, h6 {
+                        margin-top: 1em;
+                        margin-bottom: 0.5em;
+                    }
+                    
+                    /* Images */
                     img {
                         max-width: 100%;
+                        height: auto;
+                        display: block;
+                        margin: 1em auto;
                     }
+                    
+                    /* Tables */
                     table {
                         border-collapse: collapse;
                         margin: 1em 0;
+                        width: 100%;
                     }
                     th, td {
                         border: 1px solid #ddd;
                         padding: 0.5em;
                     }
+                    th {
+                        background-color: #f5f5f5;
+                    }
+                    
+                    /* Code blocks */
+                    pre, code {
+                        font-family: 'Courier New', Courier, monospace;
+                        background-color: #f5f5f5;
+                        padding: 0.2em 0.4em;
+                        border-radius: 3px;
+                    }
+                    pre {
+                        padding: 1em;
+                        overflow-x: auto;
+                    }
+                    
+                    /* Lists */
+                    ul, ol {
+                        margin: 1em 0;
+                        padding-left: 2em;
+                    }
+                    li {
+                        margin: 0.5em 0;
+                    }
+                    
+                    /* Blockquotes */
+                    blockquote {
+                        margin: 1em 0;
+                        padding-left: 1em;
+                        border-left: 4px solid #ddd;
+                    }
+                    
+                    /* Horizontal rules */
+                    hr {
+                        border: none;
+                        border-top: 1px solid #ddd;
+                        margin: 2em 0;
+                    }
                 ''', font_config=font_config)
                 
-                # Convert to HTML and then to PDF
+                # Convert to HTML with custom extensions
                 html = markdown.markdown(
                     markdown_content,
-                    extensions=['tables', 'fenced_code']
+                    extensions=['tables', 'fenced_code', 'attr_list']
                 )
-                HTML(string=html).write_pdf(output_path, stylesheets=[css], font_config=font_config)
+                
+                # Add HTML wrapper with proper meta tags
+                html_content = f'''
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>Translated Document</title>
+                </head>
+                <body>
+                    {html}
+                </body>
+                </html>
+                '''
+                
+                # Convert to PDF with WeasyPrint
+                HTML(string=html_content).write_pdf(
+                    output_path,
+                    stylesheets=[css],
+                    font_config=font_config,
+                    presentational_hints=True
+                )
                 logger.info("Converted to PDF using WeasyPrint")
                 return
+                
             except ImportError:
                 logger.warning("WeasyPrint not available. Trying alternative methods...")
             
